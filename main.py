@@ -1,6 +1,7 @@
 import kagglehub
 import pandas as pd
 import numpy as np
+import  os
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import torch
@@ -18,9 +19,7 @@ from sklearn.preprocessing import LabelEncoder
 
 
 path = kagglehub.dataset_download("nih-chest-xrays/data")
-print("Path to dataset files:", path)
 
-import os
 files = os.listdir(path)
 print("Files and directories in '", path, "':")
 for file in files:
