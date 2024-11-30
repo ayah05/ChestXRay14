@@ -165,8 +165,18 @@ sorted_ages = np.sort(ages)
 labels_filtered = labels_filtered[labels_filtered['Patient Age'] <= 95]
 labels_filtered = pd.get_dummies(labels_filtered, columns=['Patient Gender', 'View Position'])
 
-X = labels_filtered.drop(columns=['Finding Labels'], axis=1)
-y = labels_filtered['Finding Labels']
+sampled_data = {}
+for label in top_10_labels:
+    label_rows = labels_filtered[labels_filtered['Finding Labels'] == label]
+    if len(label_rows) >= 400:
+        sampled_data[label] = label_rows.sample(n=400, random_state=42)
+    else:
+        print(f"Label '{label}' has only {len(label_rows)} samples and cannot provide 400.")
+        sampled_data[label] = label_rows
+
+data_subset = pd.concat(sampled_data.values())
+X = data_subset.drop(columns=['Finding Labels'], axis=1)
+y = data_subset['Finding Labels']
 
 X_train_labels, X_test_labels, y_train_labels, y_test_labels = train_test_split(X, y, test_size=0.2, random_state=42)
 
@@ -174,7 +184,7 @@ labelEncoder = LabelEncoder()
 y_train_labels_encoded = labelEncoder.fit_transform(y_train_labels)
 y_test_labels_encoded = labelEncoder.transform(y_test_labels)
 
-dataset_labels = dataset.ChestXRayDataset(dataframe=labels_filtered,labels=y_train_labels_encoded, image_files=image_files, transform=transform)
+dataset_labels = dataset.ChestXRayDataset(dataframe=data_subset,labels=y_train_labels_encoded, image_files=image_files, transform=transform)
 dataloader_labels = DataLoader(dataset_labels, batch_size=32, shuffle=True)
 
 train_dataset = dataset.ChestXRayDataset(
@@ -194,13 +204,13 @@ val_dataset = dataset.ChestXRayDataset(
 train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
-classes_labels = labels_filtered['Finding Labels'].unique()
+classes_labels = data_subset['Finding Labels'].unique()
 num_classes = len(classes_labels)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = model.ResNet50(num_classes=num_classes).to(device)
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 criterion = nn.CrossEntropyLoss()
-num_epochs = 7
+num_epochs = 50
 patience = 2
 
 train_losses = []
