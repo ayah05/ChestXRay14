@@ -1,31 +1,29 @@
 from PIL import Image
-import os
+import torch
 from torch.utils.data import Dataset
+import os
 
-
-class ChestXRayDataset(Dataset):
-    def __init__(self, dataframe, labels, image_files, transform=None):
-        self.dataframe = dataframe
+class ChestXRayDatasetWithMetadata(Dataset):
+    def __init__(self, data, labels, image_files, metadata, transform=None):
+        self.data = data
         self.labels = labels
         self.image_files = image_files
+        self.metadata = metadata
         self.transform = transform
 
     def __len__(self):
-        return len(self.dataframe)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        row = self.dataframe.iloc[idx]
-        image_index = row['Image Index']
-
-        try:
-            image_path = next(path for path in self.image_files if os.path.basename(path) == image_index)
-        except StopIteration:
-            raise FileNotFoundError(f"Image file not found for index: {image_index}")
-
-        image = Image.open(image_path).convert('L')
+        row = self.data.iloc[idx]
+        img_path = next((img for img in self.image_files if os.path.basename(img) == row['Image Index']), None)
+        image = Image.open(img_path).convert('L')  # Grayscale
         label = self.labels[idx]
+
+        # Extract metadata
+        metadata = torch.tensor(self.metadata.iloc[idx].values, dtype=torch.float)
 
         if self.transform:
             image = self.transform(image)
 
-        return image, label
+        return image, label, metadata

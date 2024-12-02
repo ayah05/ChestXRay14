@@ -1,57 +1,60 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
-import torch.nn.functional as F
 
+class ResNet50Meta(nn.Module):
+    def __init__(self, num_classes=15, metadata_features=5):
+        super(ResNet50Meta, self).__init__()
+        # Load pretrained ResNet-50
+        resnet = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
 
-class CheXNetFPNGrayscale(nn.Module):
-    def __init__(self, num_classes=10):
-        super(CheXNetFPNGrayscale, self).__init__()
-        # Load pre-trained DenseNet
-        densenet = models.densenet121(weights=models.DenseNet121_Weights.DEFAULT)
+        # Modify the first convolutional layer to accept grayscale input
+        resnet.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
-        # Modify the first convolutional layer to accept grayscale (1-channel) input
-        self.features = densenet.features
-        self.features.conv0 = nn.Conv2d(
-            1,  # Single channel for grayscale
-            64,  # Output channels remain the same
-            kernel_size=7,
-            stride=2,
-            padding=3,
-            bias=False
+        # Add an extra max-pooling layer after the first bottleneck block
+        self.extra_pooling = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # Extract ResNet feature layers up to the last pooling layer
+        self.features = nn.Sequential(*list(resnet.children())[:-2])
+
+        # Adaptive pooling to ensure the output size matches the paper (7x7 -> 1x1)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        # Fully connected layer for image features
+        self.image_fc = nn.Sequential(
+            nn.Linear(resnet.fc.in_features, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5)
         )
 
-        # Copy weights from the original conv0 (RGB) layer to initialize the new layer
-        with torch.no_grad():
-            self.features.conv0.weight = nn.Parameter(
-                self.features.conv0.weight[:, 0:1, :, :]  # Copy weights for the first channel
-            )
+        # Fully connected layer for metadata
+        self.metadata_fc = nn.Sequential(
+            nn.Linear(metadata_features, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5)
+        )
 
-        # FPN layers
-        self.conv6 = nn.Conv2d(1024, 256, kernel_size=1)
-        self.conv5 = nn.Conv2d(512, 256, kernel_size=1)
-        self.conv4 = nn.Conv2d(256, 256, kernel_size=1)
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=1)
+        # Final classification layer
+        self.classifier = nn.Sequential(
+            nn.Linear(128 + 128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, num_classes),
+        )
 
-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
-        self.out_conv = nn.Conv2d(256, num_classes, kernel_size=1)
-        self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))  # Global average pooling
+    def forward(self, x, metadata):
+        # Forward pass for image data
+        x = self.features(x)  # ResNet feature extraction
+        x = self.extra_pooling(x)  # Extra pooling layer after the first bottleneck block
+        x = self.avgpool(x)  # Adaptive pooling to 1x1
+        x = torch.flatten(x, 1)  # Flatten to vector
+        x = self.image_fc(x)  # Fully connected layer for image features
 
-    def forward(self, x):
-        # DenseNet feature extraction
-        c3 = self.features[:6](x)
-        c4 = self.features[6:8](c3)
-        c5 = self.features[8:10](c4)
-        c6 = self.features[10:](c5)
+        # Forward pass for metadata
+        metadata = self.metadata_fc(metadata)
 
-        # FPN feature aggregation
-        p6 = self.conv6(c6)
-        p5 = self.conv5(c5) + F.interpolate(p6, size=c5.shape[2:], mode='nearest')
-        p4 = self.conv4(c4) + F.interpolate(p5, size=c4.shape[2:], mode='nearest')
-        p3 = self.conv3(c3) + F.interpolate(p4, size=c3.shape[2:], mode='nearest')
+        # Concatenate image and metadata features
+        combined = torch.cat([x, metadata], dim=1)
 
-        # Final output
-        out = self.out_conv(p3)
-        out = self.global_avg_pool(out)  # Apply global average pooling
-        out = out.view(out.size(0), -1)  # Flatten
-        return torch.sigmoid(out)
+        # Classification
+        return self.classifier(combined)
