@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
-import torchvision.models as models
+from torchvision.models import resnet50, ResNet50_Weights
 
-class ResNet50Meta(nn.Module):
-    def __init__(self, num_classes=15, metadata_features=5):
-        super(ResNet50Meta, self).__init__()
+class ResNet50(nn.Module):
+    def __init__(self, num_classes=10, metadata_features=6):
+        super(ResNet50, self).__init__()
         # Load pretrained ResNet-50
-        resnet = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        resnet = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
 
         # Modify the first convolutional layer to accept grayscale input
         resnet.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -40,6 +40,7 @@ class ResNet50Meta(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(64, num_classes),
+            nn.Sigmoid()
         )
 
     def forward(self, x, metadata):

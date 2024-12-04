@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import Dataset
 import os
 
-class ChestXRayDatasetWithMetadata(Dataset):
+class ChestXRayDataset(Dataset):
     def __init__(self, data, labels, image_files, metadata, transform=None):
         self.data = data
         self.labels = labels
@@ -16,11 +16,9 @@ class ChestXRayDatasetWithMetadata(Dataset):
 
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
-        img_path = next((img for img in self.image_files if os.path.basename(img) == row['Image Index']), None)
-        image = Image.open(img_path).convert('L')  # Grayscale
+        img_path = next((img for img in self.image_files if os.path.basename(img) == row.name), None)
+        image = Image.open(img_path).convert('L')
         label = self.labels[idx]
-
-        # Extract metadata
         metadata = torch.tensor(self.metadata.iloc[idx].values, dtype=torch.float)
 
         if self.transform:
