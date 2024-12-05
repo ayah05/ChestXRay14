@@ -18,7 +18,11 @@ class ChestXRayDataset(Dataset):
         row = self.data.iloc[idx]
         img_path = next((img for img in self.image_files if os.path.basename(img) == row.name), None)
         image = Image.open(img_path).convert('L')
-        label = self.labels[idx]
+
+        label_index = self.labels[idx]
+        label = torch.zeros(10, dtype=torch.float32)
+        label[label_index] = 1
+
         metadata = torch.tensor(self.metadata.iloc[idx].values, dtype=torch.float)
 
         if self.transform:

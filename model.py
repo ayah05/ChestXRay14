@@ -1,61 +1,103 @@
 import torch
 import torch.nn as nn
-from torchvision.models import resnet50, ResNet50_Weights
 
-class ResNet50(nn.Module):
-    def __init__(self, num_classes=10, metadata_features=6):
-        super(ResNet50, self).__init__()
-        # Load pretrained ResNet-50
-        resnet = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
 
-        # Modify the first convolutional layer to accept grayscale input
-        resnet.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+class Bottleneck(nn.Module):
+    expansion = 4
 
-        # Add an extra max-pooling layer after the first bottleneck block
-        self.extra_pooling = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+    def __init__(self, in_channels, out_channels, i_downsample=None, stride=1):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
+        self.batch_norm1 = nn.BatchNorm2d(out_channels)
 
-        # Extract ResNet feature layers up to the last pooling layer
-        self.features = nn.Sequential(*list(resnet.children())[:-2])
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1)
+        self.batch_norm2 = nn.BatchNorm2d(out_channels)
 
-        # Adaptive pooling to ensure the output size matches the paper (7x7 -> 1x1)
+        self.conv3 = nn.Conv2d(out_channels, out_channels * self.expansion, kernel_size=1, stride=1, padding=0)
+        self.batch_norm3 = nn.BatchNorm2d(out_channels * self.expansion)
+
+        self.i_downsample = i_downsample
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        identity = x.clone()
+
+        x = self.relu(self.batch_norm1(self.conv1(x)))
+        x = self.relu(self.batch_norm2(self.conv2(x)))
+        x = self.batch_norm3(self.conv3(x))
+
+        if self.i_downsample is not None:
+            identity = self.i_downsample(identity)
+
+        x += identity
+        x = self.relu(x)
+        return x
+
+
+class ResNet(nn.Module):
+    def __init__(self, ResBlock, layer_list, num_classes, num_channels=3, metadata_dim=5):
+        super(ResNet, self).__init__()
+        self.in_channels = 64
+
+        self.conv1 = nn.Conv2d(num_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.batch_norm1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU()
+        self.max_pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        self.layer1 = self._make_layer(ResBlock, layer_list[0], planes=64)
+        self.layer2 = self._make_layer(ResBlock, layer_list[1], planes=128, stride=2)
+        self.layer3 = self._make_layer(ResBlock, layer_list[2], planes=256, stride=2)
+        self.layer4 = self._make_layer(ResBlock, layer_list[3], planes=512, stride=2)
+
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
-        # Fully connected layer for image features
-        self.image_fc = nn.Sequential(
-            nn.Linear(resnet.fc.in_features, 128),
-            nn.ReLU(),
-            nn.Dropout(0.5)
-        )
-
-        # Fully connected layer for metadata
         self.metadata_fc = nn.Sequential(
-            nn.Linear(metadata_features, 128),
-            nn.ReLU(),
-            nn.Dropout(0.5)
+            nn.Linear(metadata_dim, 512),
+            nn.ReLU()
         )
-
-        # Final classification layer
-        self.classifier = nn.Sequential(
-            nn.Linear(128 + 128, 64),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(64, num_classes),
-            nn.Sigmoid()
-        )
+        self.fc = nn.Linear(512 * ResBlock.expansion + 512, 10)
 
     def forward(self, x, metadata):
-        # Forward pass for image data
-        x = self.features(x)  # ResNet feature extraction
-        x = self.extra_pooling(x)  # Extra pooling layer after the first bottleneck block
-        x = self.avgpool(x)  # Adaptive pooling to 1x1
-        x = torch.flatten(x, 1)  # Flatten to vector
-        x = self.image_fc(x)  # Fully connected layer for image features
+        x = self.relu(self.batch_norm1(self.conv1(x)))
+        x = self.max_pool(x)
 
-        # Forward pass for metadata
-        metadata = self.metadata_fc(metadata)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
 
-        # Concatenate image and metadata features
-        combined = torch.cat([x, metadata], dim=1)
+        x = nn.MaxPool2d(kernel_size=2, stride=2)(x)
 
-        # Classification
-        return self.classifier(combined)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = x.reshape(x.shape[0], -1)
+
+        if metadata is not None:
+            metadata = self.metadata_fc(metadata)
+            x = torch.cat([x, metadata], dim=1)
+
+        x = self.fc(x)
+        # x = torch.sigmoid(x)
+        return x
+
+    def _make_layer(self, ResBlock, blocks, planes, stride=1):
+        ii_downsample = None
+        layers = []
+
+        if stride != 1 or self.in_channels != planes * ResBlock.expansion:
+            ii_downsample = nn.Sequential(
+                nn.Conv2d(self.in_channels, planes * ResBlock.expansion, kernel_size=1, stride=stride),
+                nn.BatchNorm2d(planes * ResBlock.expansion)
+            )
+
+        layers.append(ResBlock(self.in_channels, planes, i_downsample=ii_downsample, stride=stride))
+        self.in_channels = planes * ResBlock.expansion
+
+        for _ in range(blocks - 1):
+            layers.append(ResBlock(self.in_channels, planes))
+
+        return nn.Sequential(*layers)
+
+
+def ResNet50(num_channels=1):
+    return ResNet(Bottleneck, [3, 4, 6, 3], num_classes=10, num_channels=num_channels, metadata_dim=5)
