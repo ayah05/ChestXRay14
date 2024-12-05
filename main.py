@@ -11,8 +11,10 @@ from sklearn.preprocessing import LabelEncoder
 from tqdm import tqdm
 from model import ResNet50
 from dataset import ChestXRayDataset
-import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw
+from sklearn.metrics import roc_curve, roc_auc_score
+import matplotlib.pyplot as plt
+from sklearn.metrics import multilabel_confusion_matrix, ConfusionMatrixDisplay
 
 # load data
 path = kagglehub.dataset_download("nih-chest-xrays/data")
@@ -106,7 +108,7 @@ __data['Patient Age'] = (__data['Patient Age'] - min_age) / (max_age - min_age)
 metadata = __data[metadata_columns]
 
 # drop target value and Patient ID because it has around 2800 unique values
-X = __data.drop(columns=['Finding Labels','Patient ID'], axis=1)
+X = __data.drop(columns=['Finding Labels','Patient ID', 'Patient Gender_F', 'Patient Gender_M', 'View Position_AP', 'View Position_PA'], axis=1)
 y = __data['Finding Labels']
 
 # set 'Image Index' as index for both X and metadata
@@ -160,61 +162,62 @@ model = ResNet50(num_channels=1).to(device)
 
 # defining optimizer, criterion and scheduler
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
-criterion = nn.BCEWithLogitsLoss().to(device)
+criterion = nn.CrossEntropyLoss()
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
 
 # defining epoch
 num_epochs = 20
 best_loss = float('inf')
 
-train_losses = []
-train_accuracies = []
-for epoch in range(num_epochs):
-    model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
+# train_losses = []
+# train_accuracies = []
+# for epoch in range(num_epochs):
+#     model.train()
+#     running_loss = 0.0
+#     correct = 0
+#     total = 0
+#
+#     # training loop
+#     for images, labels, metadata in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+#         images, labels, metadata = images.to(device), labels.to(device), metadata.to(device)
+#         optimizer.zero_grad()
+#         outputs = model(images, metadata)
+#         loss = criterion(outputs, labels)
+#         loss.backward()
+#         optimizer.step()
+#
+#         running_loss += loss.item()
+#         preds = (outputs > 0.5).float()
+#         correct += (preds == labels).sum().item()
+#         total += labels.numel()
+#
+#     avg_train_loss = running_loss / len(train_dataloader)
+#     train_accuracy = correct / total
+#
+#     # validation loop
+#     model.eval()
+#     validation_loss = 0.0
+#     with torch.no_grad():
+#         for images, labels, metadata in test_dataloader:
+#             images, labels, metadata = images.to(device), labels.to(device), metadata.to(device)
+#             outputs = model(images, metadata)
+#             loss = criterion(outputs, labels)
+#             validation_loss += loss.item()
+#
+#     avg_validation_loss = validation_loss / len(test_dataloader)
+#     scheduler.step(avg_validation_loss)
+#
+#     print(f"\nEpoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Validation Loss: {avg_validation_loss:.4f}, Accuracy: {train_accuracy:.4f}")
+#
+#     # save best model
+#     if avg_validation_loss < best_loss:
+#         best_loss = avg_validation_loss
+#         torch.save(model.state_dict(), "resnet50_.pth")
+#         print("\nModel saved!")
 
-    # training loop
-    for images, labels, metadata in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}"):
-        images, labels, metadata = images.to(device), labels.to(device), metadata.to(device)
-        optimizer.zero_grad()
-        outputs = model(images, metadata)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item()
-        preds = (outputs > 0.5).float()
-        correct += (preds == labels).sum().item()
-        total += labels.numel()
-
-    avg_train_loss = running_loss / len(train_dataloader)
-    train_accuracy = correct / total
-
-    # validation loop
-    model.eval()
-    validation_loss = 0.0
-    with torch.no_grad():
-        for images, labels, metadata in test_dataloader:
-            images, labels, metadata = images.to(device), labels.to(device), metadata.to(device)
-            outputs = model(images, metadata)
-            loss = criterion(outputs, labels)
-            validation_loss += loss.item()
-
-    avg_validation_loss = validation_loss / len(test_dataloader)
-    scheduler.step(avg_validation_loss)
-
-    print(f"\nEpoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Validation Loss: {avg_validation_loss:.4f}, Accuracy: {train_accuracy:.4f}")
-
-    # save best model
-    if avg_validation_loss < best_loss:
-        best_loss = avg_validation_loss
-        torch.save(model.state_dict(), "resnet50.pth")
-        print("\nModel saved!")
-
-
+model.load_state_dict(torch.load('resnet50_.pth'))
 model.eval()
+
 test_loss = 0.0
 correct = 0
 total = 0
@@ -224,21 +227,37 @@ true_positives = torch.zeros(10).to(device)
 false_positives = torch.zeros(10).to(device)
 false_negatives = torch.zeros(10).to(device)
 
+all_labels = []
+all_probs = []
+all_preds = []
 with torch.no_grad():
     for images, labels, metadata in tqdm(test_dataloader, desc="Testing"):
         images, labels, metadata = images.to(device), labels.to(device), metadata.to(device)
 
         outputs = model(images, metadata)
         loss = criterion(outputs, labels)
+        probs = torch.sigmoid(outputs)
+        print("Model Logits:", outputs[:5])
+        print("Sigmoid Outputs:", torch.sigmoid(outputs)[:5])
         test_loss += loss.item()
-        preds = (torch.sigmoid(outputs) > 0.5).float()
+        preds = (probs > 0.5).float()
+        all_labels.append(labels.cpu())
+        all_probs.append(probs.cpu())
+        all_preds.append(preds.cpu())
+
+        print("Batch Predictions:", preds[:5])
+        print("Batch Labels:", labels[:5])
 
         true_positives += (preds * labels).sum(dim=0)
         false_positives += (preds * (1 - labels)).sum(dim=0)
         false_negatives += ((1 - preds) * labels).sum(dim=0)
 
-        total += labels.numel()
         correct += (preds == labels).sum().item()
+        total += labels.numel()
+
+print("True Positives:", true_positives)
+print("False Positives:", false_positives)
+print("False Negatives:", false_negatives)
 
 test_loss /= len(test_dataloader)
 precision = true_positives / (true_positives + false_positives + 1e-7)
@@ -248,3 +267,45 @@ accuracy = correct / total
 
 print(f"Test Loss: {test_loss:.4f}, Test Accuracy: {accuracy:.4f}")
 print(f"Precision: {precision.mean().item():.4f}, Recall: {recall.mean().item():.4f}, F1 Score: {f1_score.mean().item():.4f}")
+
+
+all_labels = torch.cat(all_labels, dim=0).numpy()
+all_probs = torch.cat(all_probs, dim=0).numpy()
+all_preds = torch.cat(all_preds, dim=0).numpy()
+
+# plot roc curve
+n_classes = 10
+label_names = label_encoder.classes_
+plt.figure(figsize=(10, 8))
+for i in range(n_classes):
+    fpr, tpr, _ = roc_curve(all_labels[:, i], all_probs[:, i])
+    auc = roc_auc_score(all_labels[:, i], all_probs[:, i])
+    plt.plot(fpr, tpr, label=f"Class {label_names[i]} (AUC = {auc:.2f})")
+
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve for Each Label")
+plt.legend(loc="best")
+plt.grid()
+plt.show()
+
+
+# plot confusion matrices
+confusion_matrices = multilabel_confusion_matrix(all_labels, all_preds)
+fig, axes = plt.subplots(2, 5, figsize=(20, 10))
+axes = axes.flatten()
+
+for i, (cm, label) in enumerate(zip(confusion_matrices, label_names)):
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[f"Not {label}", label])
+    disp.plot(ax=axes[i], cmap='Blues', colorbar=False)
+    axes[i].set_title(f"Confusion Matrix for {label}", fontsize=12)
+    axes[i].set_xlabel("Predicted Label", fontsize=10)
+    axes[i].set_ylabel("True Label", fontsize=10)
+    axes[i].tick_params(axis='both', labelsize=8)
+
+for j in range(len(label_names), len(axes)):
+    fig.delaxes(axes[j])
+
+plt.tight_layout(pad=3.0)
+plt.show()
